@@ -1,0 +1,3 @@
+pug src -o .\
+
+pause

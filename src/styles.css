@@ -1,0 +1,29 @@
+
+body {
+  font-family: Arial, sans-serif;
+  margin: 2em;
+}
+
+#messages {
+  height: 250px;
+  overflow-y: auto;
+}
+
+.room-list-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chat-message {
+  margin-bottom: 0.5em;
+}
+
+#chat-input {
+  width: 80%;
+  display: inline-block;
+}
+
+#send-btn {
+  width: 18%;
+}
