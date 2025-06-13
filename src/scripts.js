@@ -32,6 +32,17 @@ const chatDiv = document.getElementById('chat');
 const messagesDiv = document.getElementById('messages');
 const chatInput = document.getElementById('chat-input');
 const createRoomBtn = document.querySelector('button[onclick="createRoom()"]');
+// 新增：成員列表容器
+let memberListDiv = document.getElementById('member-list');
+if (!memberListDiv) {
+  memberListDiv = document.createElement('div');
+  memberListDiv.id = 'member-list';
+  memberListDiv.className = 'mb-2';
+  // 插入到聊天室(messagesDiv)上方
+  if (chatDiv && messagesDiv) {
+    chatDiv.insertBefore(memberListDiv, messagesDiv);
+  }
+}
 
 // === 房間列表 ===
 function updateRoomList(snap) {
@@ -140,6 +151,8 @@ async function joinRoom(roomId, asOfferer = false) {
       }
     }
     prevMembers = members;
+    // 修正：傳遞所有成員
+    updateMemberListUI(members);
   });
 
   // === 關鍵: 先清空 dataChannel，setupWebRTC 會正確建立新的 ===
@@ -208,7 +221,13 @@ async function createOfferForPeer(peerId) {
   });
 
   // DataChannel 可根據需求處理
-  dc.onopen = () => { console.log(`[Host] DataChannel open for peer: ${peerId}`); };
+  dc.onopen = () => {
+    console.log(`[Host] DataChannel open for peer: ${peerId}`);
+    // 修正：用 membersRef 取得所有成員物件
+    if (membersRef) {
+      membersRef.once('value').then(snap => updateMemberListUI(snap.val() || {}));
+    }
+  };
   dc.onmessage = e => {
     console.log(`[Host] DataChannel message from peer ${peerId}:`, e.data);
     try {
@@ -218,7 +237,12 @@ async function createOfferForPeer(peerId) {
       appendMessage(peerId, e.data);
     }
   };
-  dc.onclose = () => { console.log(`[Host] DataChannel closed for peer: ${peerId}`); };
+  dc.onclose = () => {
+    console.log(`[Host] DataChannel closed for peer: ${peerId}`);
+    if (membersRef) {
+      membersRef.once('value').then(snap => updateMemberListUI(snap.val() || {}));
+    }
+  };
 
   // 房主可選擇是否保留 pc 實例（如需管理多連線）
   if (!window.hostPeerConnections) window.hostPeerConnections = {};
@@ -239,6 +263,7 @@ async function setupWebRTCWithHost() {
     dataChannel = e.channel;
     setupDataChannel();
     console.log(`[Peer] DataChannel received from host`);
+    updateMemberListUI({ [myPeerId]: true }); // 觸發UI刷新
   };
 
   // 監聽屬於自己的 offer
@@ -378,14 +403,8 @@ async function cleanupRoom() {
 // === DataChannel 聊天 ===
 function setupDataChannel() {
   if (!dataChannel) return;
-  dataChannel.onopen = () => {};
-  dataChannel.onmessage = e => {
-    try {
-      const msgObj = JSON.parse(e.data);
-      appendMessage(msgObj.peerId, msgObj.text);
-    } catch {
-      appendMessage('未知', e.data);
-    }
+  dataChannel.onopen = () => {
+    membersRef && membersRef.once('value').then(snap => updateMemberListUI(snap.val() || {}));
   };
   dataChannel.onclose = () => {
     // === 修正: 只有非 offerer 或自己主動離開時才清除 dataChannel ===
@@ -399,6 +418,61 @@ function setupDataChannel() {
       dataChannel = null;
     }
   };
+}
+
+// === DataChannel 狀態追蹤輔助 ===
+function getPeerConnectionState(pid) {
+  if (isOfferer) {
+    if (pid === myPeerId) return true;
+    // 房主：有 hostDataChannels 且 readyState 為 open 才算連線
+    if (window.hostDataChannels && window.hostDataChannels[pid]) {
+      return window.hostDataChannels[pid].readyState === 'open';
+    }
+    return false;
+  } else {
+    if (pid === myPeerId) return true;
+    // 非房主：只和房主有 dataChannel，且 readyState 為 open 才算連線
+    // 找到房主 peerId（不是自己且排序最前的那個）
+    const memberIds = Object.keys(currentMembers || {});
+    const hostId = memberIds.find(id => id !== myPeerId);
+    if (pid === hostId && dataChannel) {
+      return dataChannel.readyState === 'open';
+    }
+    // 其他人都不是連線
+    return false;
+  }
+}
+
+// === 更新成員列表UI ===
+let currentMembers = {};
+function updateMemberListUI(members) {
+  currentMembers = members; // 讓 getPeerConnectionState 能取得所有成員
+  if (!memberListDiv) return;
+  if (chatDiv && messagesDiv && memberListDiv.parentNode !== chatDiv) {
+    chatDiv.insertBefore(memberListDiv, messagesDiv);
+  }
+  memberListDiv.innerHTML = '<strong>房間成員：</strong>';
+  const ul = document.createElement('ul');
+  ul.className = 'list-group list-group-horizontal flex-wrap';
+  Object.keys(members).forEach(pid => {
+    const li = document.createElement('li');
+    li.className = 'list-group-item py-1 px-2 d-flex align-items-center';
+    // 判斷 dataChannel 狀態
+    let isConnected = getPeerConnectionState(pid);
+    // 燈號
+    const dot = document.createElement('span');
+    dot.style.display = 'inline-block';
+    dot.style.width = '12px';
+    dot.style.height = '12px';
+    dot.style.borderRadius = '50%';
+    dot.style.marginRight = '6px';
+    dot.style.background = isConnected ? '#28a745' : '#adb5bd'; // 綠/灰
+    li.appendChild(dot);
+    // 名稱
+    li.appendChild(document.createTextNode(pid === myPeerId ? `${pid} (你)` : pid));
+    ul.appendChild(li);
+  });
+  memberListDiv.appendChild(ul);
 }
 
 window.sendMessage = function() {
@@ -485,6 +559,12 @@ if (chatInput) {
   chatInput.addEventListener('keydown', function(e) {
     if (e.key === 'Enter') {
       window.sendMessage();
+      e.preventDefault();
     }
+  });
+  // 新增：手機瀏覽器通常會觸發 input 的 'change' 或 'input' 事件
+  chatInput.form?.addEventListener('submit', function(e) {
+    window.sendMessage();
+    e.preventDefault();
   });
 }
